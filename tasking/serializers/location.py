@@ -5,6 +5,7 @@ Location Serializers
 from __future__ import unicode_literals
 
 import zipfile
+from io import BytesIO
 
 from django.contrib.gis.gdal import DataSource
 from django.contrib.gis.geos import MultiPolygon, Point
@@ -12,11 +13,14 @@ from django.utils import six
 
 from backports.tempfile import TemporaryDirectory
 from django_countries import Countries
+from future.builtins import bytes  # pylint: disable=redefined-builtin
 from rest_framework import serializers
 from rest_framework_gis.serializers import GeometryField
 
 from tasking.common_tags import (GEODETAILS_ONLY, GEOPOINT_MISSING,
                                  RADIUS_MISSING)
+from tasking.exceptions import (MissingFiles, ShapeFileNotFound,
+                                UnnecessaryFiles)
 from tasking.models import Location
 from tasking.utils import get_shapefile
 
@@ -30,15 +34,28 @@ class ShapeFileField(GeometryField):
         """
         Custom Conversion for shapefile field
         """
+        if isinstance(value, dict):
+            # if given a raw binary data buffer i.e an ArrayBuffer,
+            # store the binary data in value
+            # The values dict should be an ordered dict
+            value = BytesIO(bytes(value.values()))
+
         multipolygon = value
 
         if multipolygon is not None:
+            # open zipfile given : path to a file (a string),
+            # a file-like object or a path-like object
             try:
                 zip_file = zipfile.ZipFile(value.temporary_file_path())
             except AttributeError:
                 zip_file = zipfile.ZipFile(value)
+
             # Call get_shapefile method to get the .shp files name
-            shpfile = get_shapefile(zip_file)
+            try:
+                shpfile = get_shapefile(zip_file)
+            except (ShapeFileNotFound, MissingFiles, UnnecessaryFiles) as exp:
+                # pylint: disable=no-member
+                raise serializers.ValidationError(exp.message)
 
             # Setup a Temporary Directory to store Shapefiles
             with TemporaryDirectory() as temp_dir:
